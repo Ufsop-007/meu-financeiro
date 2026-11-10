@@ -1217,13 +1217,44 @@ function moneyIn(line) {
   }
   return out;
 }
-// Boleto: os 10 últimos dígitos da linha digitável (47 dígitos) são o valor em centavos.
-function boletoAmount(lines) {
+// Linha digitável do boleto (47 dígitos). Na foto ela pode vir grudada no código do banco ("104-0 10492.3…"),
+// então procura dentro da sequência de números e confere o dígito verificador do 1º campo (módulo 10).
+function mod10(s) {
+  let sum = 0;
+  for (let i = s.length - 1, w = 2; i >= 0; i--, w = w === 2 ? 1 : 2) { const p = Number(s[i]) * w; sum += p > 9 ? p - 9 : p; }
+  return (10 - (sum % 10)) % 10;
+}
+function linhaDigitavel(lines) {
   for (const line of lines) {
-    const digits = line.replace(/\D/g, '');
-    if (digits.length === 47) { const v = Number(digits.slice(-10)) / 100; if (v > 0 && v < 1000000) return v; }
+    for (const m of String(line).matchAll(/\d[\d. ]*\d/g)) {
+      const digits = m[0].replace(/\D/g, '');
+      if (digits.length < 47) continue;
+      for (const cand of [digits.slice(-47), digits.slice(0, 47)]) {
+        if (mod10(cand.slice(0, 9)) === Number(cand[9])) return cand;
+      }
+    }
   }
-  return null;
+  return '';
+}
+// Boleto: os 10 últimos dígitos da linha digitável são o valor em centavos.
+function boletoAmount(lines) {
+  const digits = linhaDigitavel(lines);
+  if (!digits) return null;
+  const v = Number(digits.slice(-10)) / 100;
+  return v > 0 && v < 1000000 ? v : null;
+}
+// Boleto: o "fator de vencimento" (4 dígitos antes do valor na linha digitável) dá a data de vencimento.
+// Base antiga: 07/10/1997 + fator. Desde 22/02/2025 o fator recomeçou em 1000. Usa a data mais próxima de hoje.
+function boletoDue(lines) {
+  const digits = linhaDigitavel(lines);
+  if (!digits) return '';
+  const fator = Number(digits.slice(33, 37));
+  if (fator < 1000) return '';
+  const day = 86400000, now = Date.now();
+  const oldD = Date.UTC(1997, 9, 7) + fator * day;
+  const newD = Date.UTC(2025, 1, 22) + (fator - 1000) * day;
+  const pick = Math.abs(newD - now) < Math.abs(oldD - now) ? newD : oldD;
+  return new Date(pick).toISOString().slice(0, 10);
 }
 function findAmount(lines) {
   const ns = lines.map(norm);
@@ -1324,7 +1355,7 @@ function parseDocument(text) {
     { re: /energia|equatorial|saneago|agua|internet|telefonia/i, type: 'Conta de consumo', category: 'Contas domésticas', description: 'Pagamento de conta', payment: 'Boleto' },
     { re: /boleto|linha digitavel|beneficiario|pagador|nosso numero|valor do documento/i, type: 'Boleto bancário', category: 'Outros', description: 'Pagamento de boleto', payment: 'Boleto' }
   ];
-  const rule = rules.find(r => r.re.test(all));
+  const rule = rules.find(r => r.re.test(all)) || (linhaDigitavel(lines) ? rules[rules.length - 1] : null);
   if (rule) { f.type = rule.type; f.category = rule.category; f.description = rule.description; f.payment = rule.payment; }
 
   const amt = findAmount(lines);
@@ -1377,6 +1408,7 @@ function parseDocument(text) {
   for (let i = 0; i < ns.length; i++) {
     if (/vencimento|data de vencimento/i.test(ns[i])) { f.dueDate = toISO(lines[i]) || toISO(lines[i + 1] || ''); if (f.dueDate) break; }
   }
+  if (!f.dueDate) f.dueDate = boletoDue(lines);
   for (let i = 0; i < ns.length; i++) {
     if (/data do documento|data de emissao|emitido em/i.test(ns[i])) { f.issueDate = toISO(lines[i]) || toISO(lines[i + 1] || ''); if (f.issueDate) break; }
   }
@@ -1395,7 +1427,9 @@ function applyOCR(d, ocrConfidence) {
   for (const [id, key] of [['merchant', 'merchant'], ['beneficiary', 'beneficiary'], ['payer', 'payer'], ['dueDate', 'dueDate'], ['reference', 'reference'], ['documentNumber', 'documentNumber']]) {
     if (d[key]) $(id).value = d[key];
   }
-  if (d.issueDate) $('dateInput').value = d.issueDate;
+  // Boleto: a data do lançamento é o vencimento. Cupom/comprovante: a data impressa.
+  const when = d.payment === 'Boleto' && d.dueDate ? d.dueDate : d.issueDate;
+  if (when) $('dateInput').value = when;
   const extra = [d.type, d.reference ? 'Referência: ' + d.reference : '', d.documentNumber ? 'Documento: ' + d.documentNumber : ''].filter(Boolean);
   if (extra.length && !$('notes').value.trim()) $('notes').value = extra.join('\n');
   const filled = [d.merchant, d.beneficiary, d.payer, d.dueDate, d.reference, d.documentNumber].filter(Boolean).length;
