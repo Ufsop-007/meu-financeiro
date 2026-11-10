@@ -20,6 +20,7 @@
       return auth.onAuthStateChanged(u => cb(u ? {
         email: (u.email || '').toLowerCase(),
         name: u.displayName || '',
+        photo: u.photoURL || '',
         emailVerified: !!u.emailVerified
       } : null));
     },

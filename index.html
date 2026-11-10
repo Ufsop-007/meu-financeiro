@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://apis.google.com https://www.gstatic.com https://cdn.jsdelivr.net data: blob:; frame-src https://*.firebaseapp.com https://accounts.google.com https://*.google.com; worker-src 'self' blob: https://cdn.jsdelivr.net; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data: blob: https://*.googleusercontent.com; font-src 'self'; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://apis.google.com https://www.gstatic.com https://cdn.jsdelivr.net data: blob:; frame-src https://*.firebaseapp.com https://accounts.google.com https://*.google.com; worker-src 'self' blob: https://cdn.jsdelivr.net; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="theme-color" content="#0b0d14">
 <meta name="color-scheme" content="dark">
@@ -33,6 +33,10 @@
     <div class="logo-mark" aria-hidden="true">$</div>
     <h1 id="vaultTitle">Senha do casal</h1>
     <p class="muted" id="vaultMessage"></p>
+    <div id="bioWrap" hidden>
+      <button class="btn btn-primary block" type="button" id="bioUnlock">👆 Entrar com a digital</button>
+      <p class="fine">ou digite a senha do casal</p>
+    </div>
     <label class="label" for="vaultPassword">Senha do casal</label>
     <div class="pw">
       <input id="vaultPassword" type="password" autocomplete="current-password" required>
@@ -79,6 +83,13 @@
   <main>
     <!-- ---------- Início ---------- -->
     <section class="view active" id="view-home" aria-label="Início">
+      <div class="card bio-offer" id="bioOffer" hidden>
+        <p><strong>👆 Entrar com a digital?</strong><span class="muted small block">Neste aparelho, a digital substitui a senha do casal no dia a dia.</span></p>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="bioOfferYes" type="button">Ativar</button>
+          <button class="btn btn-ghost" id="bioOfferNo" type="button">Agora não</button>
+        </div>
+      </div>
       <div class="page-head">
         <div>
           <p class="eyebrow">Visão geral</p>
@@ -193,7 +204,9 @@
           <p class="muted small">Dados cifrados com AES-256-GCM. A chave sai da senha do casal (PBKDF2, 310 mil iterações) e fica só neste aparelho. O servidor não lê nada.</p>
           <div class="btn-row">
             <button class="btn btn-ghost" id="changePassBtn" type="button">Trocar senha do casal</button>
+            <button class="btn btn-ghost" id="bioToggle" type="button" hidden>Ativar digital</button>
           </div>
+          <p class="muted small" id="bioInfo" hidden></p>
           <p class="muted small" id="syncInfo"></p>
         </div>
         <div class="card">

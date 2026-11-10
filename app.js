@@ -62,6 +62,9 @@ let unsubscribe = null, remoteRaw = new Map(), decCache = new Map();
 let idleTimer = null, failedTries = 0, lockedUntil = 0;
 let vaultMode = 'setup';
 let rebuildChain = Promise.resolve();
+let bioPendingKey = null;      // chave guardada neste aparelho, liberada só depois da digital
+let photos = {};               // nome -> foto do Google
+let photoSaving = false;
 
 // ---------- Criptografia ----------
 const cryptoReady = () => !!(window.crypto && crypto.subtle && crypto.getRandomValues && window.indexedDB);
@@ -108,6 +111,78 @@ const KeyStore = {
   async put(k) { try { await this.run('readwrite', s => s.put(k, 'key')); } catch (e) { console.error(e); } },
   async del() { try { await this.run('readwrite', s => s.delete('key')); } catch { /* ignore */ } }
 };
+
+// ---------- Digital (biometria do aparelho, via WebAuthn) ----------
+// A digital é uma trava local: a chave do casal continua guardada só neste aparelho e só é liberada
+// depois que o aparelho confirma a digital (ou rosto/PIN do Windows Hello). A senha do casal sempre funciona.
+const Bio = {
+  read() {
+    try { const v = JSON.parse(localStorage.getItem('mf3_bio') || 'null'); return v && me && v.email === me.email ? v : null; } catch { return null; }
+  },
+  save(v) { try { localStorage.setItem('mf3_bio', JSON.stringify(v)); } catch { /* sem armazenamento */ } },
+  clear() { try { localStorage.removeItem('mf3_bio'); } catch { /* ignore */ } },
+  async available() {
+    try { return !!(window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()); } catch { return false; }
+  },
+  async enable() {
+    const cred = await navigator.credentials.create({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { name: 'Meu Financeiro', id: location.hostname },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: me.email, displayName: me.name },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+      authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged' },
+      timeout: 60000, attestation: 'none'
+    } });
+    if (!cred) throw new Error('Cancelado.');
+    this.save({ id: b64(new Uint8Array(cred.rawId)), email: me.email });
+  },
+  async verify() {
+    const b = this.read();
+    if (!b) return false;
+    const a = await navigator.credentials.get({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rpId: location.hostname,
+      allowCredentials: [{ type: 'public-key', id: unb64(b.id) }],
+      userVerification: 'required', timeout: 60000
+    } });
+    if (!a) return false;
+    const flags = new Uint8Array(a.response.authenticatorData)[32];
+    return (flags & 0x05) === 0x05;   // usuário presente + verificado (digital/rosto/PIN)
+  }
+};
+
+// ---------- Fotos do Google ----------
+const safePhoto = url => (/^https:\/\/[a-z0-9-]+\.googleusercontent\.com\/[^\s"'<>]+$/i.test(String(url || '')) ? String(url) : '');
+function avatarHTML(name) {
+  const url = photos[name];
+  return url
+    ? `<img class="avatar" src="${esc(url)}" alt="" referrerpolicy="no-referrer" loading="lazy" data-initials="${esc(initials(name))}">`
+    : `<span class="avatar">${esc(initials(name))}</span>`;
+}
+// Se a foto não carregar, volta para as iniciais.
+document.addEventListener('error', e => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement) || !img.classList.contains('avatar')) return;
+  const span = document.createElement('span');
+  span.className = 'avatar';
+  span.textContent = img.dataset.initials || '?';
+  img.replaceWith(span);
+}, true);
+async function photoDocId(email) {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(email)));
+  return 'pf_' + [...h.slice(0, 8)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+// Publica a minha foto (cifrada, como o resto) para o outro aparelho também ver.
+async function savePhoto() {
+  if (!me || !me.photo || !cryptoKey || photoSaving) return;
+  photoSaving = true;
+  try {
+    const id = await photoDocId(me.email);
+    const rec = await encWith(cryptoKey, { name: me.name, photo: me.photo }, 'mf3|' + id);
+    rec.u = nowISO();
+    await B.store.setDoc(id, rec);
+  } catch (err) { console.error(err); } finally { photoSaving = false; }
+}
 
 // ---------- Dados: documentos no servidor ----------
 // verifier       -> {s (salt), i, c}  confirma a senha do casal
@@ -167,8 +242,14 @@ function rebuildFromRemote() {
   rebuildChain = rebuildChain.catch(() => {}).then(async () => {
     const nextTx = [];
     let cfg = null;
+    const nextPhotos = {};
     for (const [id, rec] of remoteRaw) {
       if (id === 'config') { cfg = await decCached(id, rec, 'mf3|config'); continue; }
+      if (id.startsWith('pf_')) {
+        // foto cifrada com senha antiga (ou inválida) só é ignorada; o dono republica ao abrir o app
+        try { const p = await decCached(id, rec, 'mf3|' + id); if (p && typeof p.name === 'string' && safePhoto(p.photo)) nextPhotos[p.name] = p.photo; } catch { /* ignore */ }
+        continue;
+      }
       if (!id.startsWith('tx_') || rec.d) continue;
       const t = await decCached(id, rec, 'mf3|' + id);
       nextTx.push({ ...t, id: id.slice(3) });
@@ -185,10 +266,14 @@ function rebuildFromRemote() {
       people = names.length ? names : ['Eu']; budgets = {}; budgetsAt = '';
       await saveConfig();
     }
+    const mineRemote = me ? nextPhotos[me.name] : '';
+    if (me && me.photo) nextPhotos[me.name] = me.photo;
+    photos = nextPhotos;
+    if (me && me.photo && mineRemote !== me.photo) savePhoto();
     renderAll();
   }).catch(err => {
     if (!(err && err.name === 'OperationError')) console.error(err);
-    if (err && err.name === 'OperationError') lockApp('A senha do casal foi trocada em outro aparelho. Digite a nova senha.');
+    if (err && err.name === 'OperationError') lockApp('A senha do casal foi trocada em outro aparelho. Digite a nova senha.', true);
   });
   return rebuildChain;
 }
@@ -294,6 +379,7 @@ async function rotatePassphrase(newPw) {
       await saveTx(receipt ? { ...t, receipt } : t);
     }
     await saveConfig();
+    await savePhoto();
     const ver = await encWith(newKey, { check: 'ok' }, 'mf3|verifier');
     await B.store.setDoc('verifier', { s: b64(salt), ...ver });
     coupleSalt = salt;
@@ -356,23 +442,106 @@ function showPassGate(mode, message) {
   $('vaultPassword').value = ''; $('vaultConfirm').value = ''; $('vaultStatus').textContent = '';
   $('vaultPassword').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
   updateStrength();
-  setTimeout(() => $('vaultPassword').focus(), 50);
+  const bio = !setup && !!bioPendingKey && !!Bio.read();
+  $('bioWrap').hidden = !bio;
+  if (bio) {
+    if (!message) $('vaultMessage').textContent = `Olá, ${me ? me.name : ''}. Toque abaixo e use a digital.`;
+    setTimeout(() => unlockWithBio(true), 150);   // já abre o pedido da digital; se o navegador não deixar, fica o botão
+  } else {
+    setTimeout(() => $('vaultPassword').focus(), 50);
+  }
 }
 
 async function startSession(user) {
-  me = { email: user.email, name: MEMBERS[user.email] || user.name || user.email.split('@')[0] };
-  $('whoami').textContent = me.name;
+  me = { email: user.email, name: MEMBERS[user.email] || user.name || user.email.split('@')[0], photo: safePhoto(user.photo) };
+  if (me.photo) photos[me.name] = me.photo;
+  renderMe();
   const ver = await B.store.getDoc('verifier');
   if (!ver) return showPassGate('setup');
   coupleSalt = unb64(ver.s);
   const saved = await KeyStore.get();
   if (saved && await checkKey(saved, ver)) {
+    if (Bio.read()) { bioPendingKey = saved; return showPassGate('unlock'); }
     cryptoKey = saved;
     return openApp();
   }
   await KeyStore.del();
+  bioPendingKey = null;
   showPassGate('unlock');
 }
+function renderMe() {
+  $('whoami').innerHTML = me ? avatarHTML(me.name) + `<span>${esc(me.name)}</span>` : '';
+}
+
+// Desbloqueio com a digital
+let bioBusy = false;
+async function unlockWithBio(auto) {
+  if (!bioPendingKey || bioBusy || document.body.dataset.gate !== 'pass') return;
+  bioBusy = true;
+  const status = $('vaultStatus'), btn = $('bioUnlock');
+  btn.disabled = true;
+  if (!auto) status.textContent = 'Confirme com a digital…';
+  try {
+    if (!(await Bio.verify())) throw new Error('Digital não confirmada.');
+    const ver = await B.store.getDoc('verifier');
+    if (!ver || !(await checkKey(bioPendingKey, ver))) {
+      bioPendingKey = null;
+      await KeyStore.del();
+      return showPassGate('unlock', 'A senha do casal foi trocada. Digite a nova senha.');
+    }
+    coupleSalt = unb64(ver.s);
+    cryptoKey = bioPendingKey;
+    bioPendingKey = null;
+    failedTries = 0;
+    status.textContent = '';
+    openApp();
+  } catch (err) {
+    if (!auto) status.textContent = 'Digital não confirmada. Tente de novo ou digite a senha do casal.';
+  } finally {
+    bioBusy = false;
+    btn.disabled = false;
+  }
+}
+$('bioUnlock').onclick = () => unlockWithBio(false);
+// Ao voltar para o app (celular), já pede a digital.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && bioPendingKey && document.body.dataset.gate === 'pass') unlockWithBio(true);
+});
+
+// Oferta / liga-desliga da digital
+function bioDeclined() { try { return localStorage.getItem('mf3_bio_no') === (me && me.email); } catch { return false; } }
+async function refreshBioUI() {
+  const avail = await Bio.available();
+  const on = !!Bio.read();
+  $('bioOffer').hidden = !(avail && !on && !bioDeclined());
+  $('bioToggle').hidden = !avail;
+  $('bioToggle').textContent = on ? 'Desativar digital' : 'Ativar digital';
+  $('bioInfo').hidden = !avail;
+  $('bioInfo').textContent = on
+    ? 'Digital ativada neste aparelho: ao abrir o app ou depois de bloquear, use a digital. A senha do casal continua valendo.'
+    : 'Ative a digital para não precisar digitar a senha do casal neste aparelho.';
+}
+async function enableBio() {
+  try {
+    await Bio.enable();
+    try { localStorage.removeItem('mf3_bio_no'); } catch { /* ignore */ }
+    toast('Digital ativada neste aparelho.');
+  } catch (err) {
+    console.error(err);
+    toast('A digital não foi ativada. Confira se o aparelho tem digital ou bloqueio de tela cadastrado.');
+  }
+  refreshBioUI();
+}
+$('bioOfferYes').onclick = enableBio;
+$('bioOfferNo').onclick = () => { try { localStorage.setItem('mf3_bio_no', me.email); } catch { /* ignore */ } refreshBioUI(); };
+$('bioToggle').onclick = () => {
+  if (Bio.read()) {
+    if (!confirm('Desativar a digital neste aparelho? Depois de bloquear, será preciso digitar a senha do casal.')) return;
+    Bio.clear();
+    toast('Digital desativada neste aparelho.');
+    refreshBioUI();
+  } else enableBio();
+};
 async function checkKey(key, ver) {
   try { return (await decWith(key, ver, 'mf3|verifier')).check === 'ok'; } catch { return false; }
 }
@@ -384,27 +553,37 @@ async function openApp() {
   startListening();
   setSync('pending');
   resetIdle();
+  refreshBioUI();
 }
 
-function lockApp(message) {
+// hard = apaga a chave deste aparelho (senha trocada / sair da conta). Sem hard, com a digital ativada,
+// a chave fica guardada e o desbloqueio é pela digital.
+function lockApp(message, hard) {
   if (!cryptoKey && document.body.dataset.gate !== 'app') return;
   clearTimeout(idleTimer);
   stopListening();
+  if (!hard && cryptoKey && Bio.read()) {
+    bioPendingKey = cryptoKey;
+  } else {
+    bioPendingKey = null;
+    KeyStore.del();
+  }
   cryptoKey = null;
-  KeyStore.del();
   txs = []; people = []; budgets = {}; budgetsAt = '';
   receiptData = ''; selectedReceiptFile = null; editingId = null;
   ['txModal', 'personModal', 'passModal'].forEach(id => $(id).classList.remove('show'));
   $('scanPreview').removeAttribute('src'); $('scanPreview').hidden = true;
   $('cameraFile').value = ''; $('receiptFile').value = '';
-  if (me) showPassGate('unlock', message || 'Bloqueado. Digite a senha do casal para continuar.');
+  if (me) showPassGate('unlock', message || (bioPendingKey ? 'Bloqueado. Use a digital ou a senha do casal para continuar.' : 'Bloqueado. Digite a senha do casal para continuar.'));
   else showLogin(message);
   setSync('locked');
 }
 
 async function signOutApp() {
-  lockApp();
+  lockApp(undefined, true);
+  Bio.clear();
   me = null;
+  photos = {};
   try { await B.signOut(); } catch (err) { console.error(err); }
   showLogin('Você saiu da conta.');
 }
@@ -412,7 +591,7 @@ async function signOutApp() {
 const IDLE_EVENTS = ['pointerdown', 'keydown', 'touchstart'];
 function resetIdle() {
   clearTimeout(idleTimer);
-  if (cryptoKey) idleTimer = setTimeout(() => lockApp('Bloqueado por inatividade. Digite a senha do casal para continuar.'), IDLE_MS);
+  if (cryptoKey) idleTimer = setTimeout(() => lockApp(Bio.read() ? 'Bloqueado por inatividade. Use a digital para continuar.' : 'Bloqueado por inatividade. Digite a senha do casal para continuar.'), IDLE_MS);
 }
 IDLE_EVENTS.forEach(ev => document.addEventListener(ev, resetIdle, { passive: true }));
 
@@ -515,6 +694,7 @@ $('vaultForm').addEventListener('submit', async e => {
     }
     coupleSalt = salt;
     cryptoKey = key;
+    bioPendingKey = null;
     await KeyStore.put(key);
     failedTries = 0;
     openApp();
@@ -579,6 +759,7 @@ function boot() {
     if (!user) {
       stopListening();
       cryptoKey = null;
+      bioPendingKey = null;
       me = null;
       showLogin();
       return;
@@ -702,7 +883,7 @@ function renderHome() {
 
   const byPerson = Object.entries(sumBy(expenses, 'person')).sort((a, b) => b[1] - a[1]);
   $('personSplit').innerHTML = byPerson.length
-    ? byPerson.map(([p, v]) => `<div class="person-row"><div class="who"><span class="avatar">${esc(initials(p))}</span><div><b>${esc(p)}</b><small>${Math.round(v / out * 100)}% dos gastos</small></div></div><b>${money(v)}</b></div>`).join('')
+    ? byPerson.map(([p, v]) => `<div class="person-row"><div class="who">${avatarHTML(p)}<div><b>${esc(p)}</b><small>${Math.round(v / out * 100)}% dos gastos</small></div></div><b>${money(v)}</b></div>`).join('')
     : '<p class="muted small">Sem despesas neste período.</p>';
 
   $('recentList').innerHTML = sortedTxs().filter(t => inRange(t, r)).slice(0, 5).map(txCard).join('')
@@ -988,12 +1169,6 @@ function cropPayerArea(source) {
   return c;
 }
 function norm(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ').trim(); }
-function toMoney(s) {
-  let v = String(s || '').replace(/[^\d,.]/g, '');
-  if (v.includes(',')) v = v.replace(/\./g, '').replace(',', '.');
-  const n = Number(v);
-  return Number.isFinite(n) && n > 0 && n < 1000000 ? n : null;
-}
 function toISO(s) {
   const m = String(s || '').match(/\b(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{2,4})\b/);
   if (!m) return '';
@@ -1014,6 +1189,66 @@ function guessName(text) {
   return '';
 }
 
+// ---------- Valor do comprovante ----------
+// Tolera os erros comuns do OCR em foto de celular: "R$" lido como "RS"/"R5", vírgula lida como ponto
+// e espaços soltos ("74, 82"). Não confunde datas (09.11.2026), horas nem litros (32,150 L).
+const MONEY_RE = /(?<![\d.,])(\d{1,3}(?:\.\d{3})+|\d{1,7})\s?[,.]\s?(\d{2})(?!\d|[.,/:]\d)/g;
+const AMOUNT_SKIP = /subtotal|troco|tributo|imposto|desconto|tarifa|juros|multa|qtd|quantidade|itens|saldo|limite|acrescimo|aprox|cpf|cnpj|codigo de barras|linha digitavel|nosso numero/i;
+const AMOUNT_TIERS = [
+  { re: /valor do documento|valor a pagar|total a pagar|valor cobrado|valor total|total do documento|valor com desconto|valor aprovado|valor da (?:transacao|compra|transferencia|venda|parcela)|valor do (?:pagamento|pix|boleto)|valor debitado|total geral/i, confidence: 'high' },
+  { re: /valor pago|total pago/i, confidence: 'high' },
+  { re: /\btotal\b/i, confidence: 'high', skip: true },
+  { re: /\bvalor\b/i, confidence: 'medium', skip: true }
+];
+function fixCurrency(line) { return String(line || '').replace(/\bR\s*[$S5§]\s*(?=\d)/gi, 'R$ '); }
+function moneyIn(line) {
+  const out = [];
+  for (const m of fixCurrency(line).matchAll(MONEY_RE)) {
+    const v = Number(m[1].replace(/\./g, '') + '.' + m[2]);
+    if (Number.isFinite(v) && v > 0 && v < 1000000) out.push({ v, cur: /R\$\s*$/.test(fixCurrency(line).slice(0, m.index)) });
+  }
+  return out;
+}
+// Boleto: os 10 últimos dígitos da linha digitável (47 dígitos) são o valor em centavos.
+function boletoAmount(lines) {
+  for (const line of lines) {
+    const digits = line.replace(/\D/g, '');
+    if (digits.length === 47) { const v = Number(digits.slice(-10)) / 100; if (v > 0 && v < 1000000) return v; }
+  }
+  return null;
+}
+function findAmount(lines) {
+  const ns = lines.map(norm);
+  const tryTier = tier => {
+    for (let i = 0; i < ns.length; i++) {
+      const m = ns[i].match(tier.re);
+      if (!m) continue;
+      if (tier.skip && AMOUNT_SKIP.test(ns[i])) continue;
+      if (/aprox|tributo/i.test(ns[i])) continue;
+      const after = ns[i].slice(m.index + m[0].length);
+      for (const cand of [after, ns[i + 1] || '', ns[i + 2] || '']) {
+        if (cand !== after && AMOUNT_SKIP.test(cand)) continue;
+        const vals = moneyIn(cand);
+        if (vals.length) return vals[0].v;
+      }
+    }
+    return null;
+  };
+  let v = tryTier(AMOUNT_TIERS[0]); if (v !== null) return { amount: v, confidence: 'high' };
+  v = tryTier(AMOUNT_TIERS[1]); if (v !== null) return { amount: v, confidence: 'high' };
+  v = boletoAmount(lines); if (v !== null) return { amount: v, confidence: 'high' };
+  v = tryTier(AMOUNT_TIERS[2]); if (v !== null) return { amount: v, confidence: 'high' };
+  v = tryTier(AMOUNT_TIERS[3]); if (v !== null) return { amount: v, confidence: 'medium' };
+  // Sem rótulo: prefere valores com "R$"; se houver vários, sugere o maior (normalmente o total).
+  const all = [];
+  for (const line of ns) if (!AMOUNT_SKIP.test(line)) all.push(...moneyIn(line));
+  const withCur = [...new Set(all.filter(x => x.cur).map(x => x.v))];
+  if (withCur.length === 1) return { amount: withCur[0], confidence: 'medium' };
+  const pool = withCur.length ? withCur : [...new Set(all.map(x => x.v))];
+  if (pool.length) return { amount: Math.max(...pool), confidence: 'low' };
+  return { amount: null, confidence: 'none' };
+}
+
 function parseDocument(text) {
   const lines = String(text || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   const ns = lines.map(norm), all = norm(text);
@@ -1030,25 +1265,8 @@ function parseDocument(text) {
   const rule = rules.find(r => r.re.test(all));
   if (rule) { f.type = rule.type; f.category = rule.category; f.description = rule.description; f.payment = rule.payment; }
 
-  // Valor só é considerado confiável quando aparece junto a um rótulo financeiro explícito.
-  for (let i = 0; i < lines.length; i++) {
-    if (/valor do documento|valor a pagar|valor cobrado|total a pagar|valor total|total do documento|valor com desconto/i.test(ns[i])) {
-      for (const line of [lines[i], lines[i + 1] || '', lines[i + 2] || '']) {
-        const m = line.match(/(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})/i);
-        if (m) { const v = toMoney(m[1]); if (v !== null) { f.amount = v; f.confidence = 'high'; break; } }
-      }
-      if (f.amount !== null) break;
-    }
-  }
-  if (f.amount === null) {
-    const vals = [];
-    for (const line of lines) {
-      if (/linha digitavel|codigo de barras|nosso numero|cpf|cnpj/i.test(norm(line))) continue;
-      for (const m of line.matchAll(/R\$\s*(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})/gi)) { const v = toMoney(m[1]); if (v !== null) vals.push(v); }
-    }
-    const unique = [...new Set(vals)];
-    if (unique.length === 1) { f.amount = unique[0]; f.confidence = 'medium'; }
-  }
+  const amt = findAmount(lines);
+  f.amount = amt.amount; f.confidence = amt.confidence;
 
   function field(labels) {
     for (let i = 0; i < ns.length; i++) {
@@ -1112,7 +1330,9 @@ function applyOCR(d, ocrConfidence) {
   if (extra.length && !$('notes').value.trim()) $('notes').value = extra.join('\n');
   const filled = [d.merchant, d.beneficiary, d.payer, d.dueDate, d.reference, d.documentNumber].filter(Boolean).length;
   let msg = (d.confidence === 'high' ? 'Valor identificado junto ao campo do documento'
-    : d.confidence === 'medium' ? 'Valor provável identificado' : 'Valor não identificado com segurança')
+    : d.confidence === 'medium' ? 'Valor provável identificado'
+    : d.confidence === 'low' ? 'Valor sugerido (o maior encontrado no comprovante), confira'
+    : 'Valor não encontrado; digite à mão')
     + (d.amount !== null ? ': ' + money(d.amount) : '') + `. ${filled} campo(s) adicional(is) preenchido(s). Revise antes de salvar.`;
   if (ocrConfidence < 55) msg += ' A foto parece pouco nítida; tente fotografar de frente, sem movimento e com boa iluminação.';
   $('ocrStatus').textContent = msg;
@@ -1210,11 +1430,12 @@ function renderCouple() {
       ? '<span class="muted small">Integrante do casal</span>'
       : `<button class="btn btn-ghost" type="button" data-rename="${esc(p)}">Renomear</button><button class="btn btn-danger" type="button" data-remove="${esc(p)}">Remover</button>`;
     return `<div class="person-row">
-      <div class="who"><span class="avatar">${esc(initials(p))}</span><div><b>${esc(p)}</b><small>${n} lançamento(s)</small></div></div>
+      <div class="who">${avatarHTML(p)}<div><b>${esc(p)}</b><small>${n} lançamento(s)</small></div></div>
       <div class="actions">${actions}</div>
     </div>`;
   }).join('');
   $('whoami2').textContent = me ? me.name : '';
+  renderMe();
   $('syncInfo').textContent = 'Os lançamentos são sincronizados em tempo real entre os aparelhos. Sem internet, ficam salvos e são enviados ao reconectar.';
 }
 

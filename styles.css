@@ -189,6 +189,14 @@ main { max-width: 1120px; margin: 0 auto; padding: 24px 28px 120px; }
 .person-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .person-row:last-child { border-bottom: 0; }
 .avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: 13px; background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff; flex-shrink: 0; }
+img.avatar { object-fit: cover; padding: 0; }
+.topbar .who { display: inline-flex; align-items: center; gap: 6px; }
+.topbar .who .avatar { width: 24px; height: 24px; font-size: 10px; }
+#bioWrap { margin: 4px 0 12px; }
+#bioWrap .fine { margin: 10px 0 0; text-align: center; }
+.bio-offer { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.bio-offer p { margin: 0; }
+.bio-offer .btn-row { margin-top: 0; }
 .person-row .who { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .person-row .who small { display: block; color: var(--muted); font-size: 12px; }
 .person-row .actions { display: flex; gap: 6px; }
