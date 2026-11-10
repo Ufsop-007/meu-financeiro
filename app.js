@@ -422,6 +422,8 @@ function setSync(state) {
   };
   const [text, cls] = map[state] || map.synced;
   el.textContent = text;
+  el.title = text;
+  el.setAttribute('aria-label', text);
   el.className = 'sync ' + cls;
 }
 window.addEventListener('online', () => setSync('pending'));
@@ -470,7 +472,7 @@ async function startSession(user) {
   showPassGate('unlock');
 }
 function renderMe() {
-  $('whoami').innerHTML = me ? avatarHTML(me.name) + `<span>${esc(me.name)}</span>` : '';
+  $('whoami').innerHTML = me ? avatarHTML(me.name) + `<span class="who-name">${esc(me.name)}</span>` : '';
 }
 
 // Desbloqueio com a digital
@@ -572,6 +574,7 @@ function lockApp(message, hard) {
   txs = []; people = []; budgets = {}; budgetsAt = '';
   receiptData = ''; selectedReceiptFile = null; editingId = null;
   ['txModal', 'personModal', 'passModal'].forEach(id => $(id).classList.remove('show'));
+  document.body.classList.remove('noscroll');
   $('scanPreview').removeAttribute('src'); $('scanPreview').hidden = true;
   $('cameraFile').value = ''; $('receiptFile').value = '';
   if (me) showPassGate('unlock', message || (bioPendingKey ? 'Bloqueado. Use a digital ou a senha do casal para continuar.' : 'Bloqueado. Digite a senha do casal para continuar.'));
@@ -886,7 +889,7 @@ function renderHome() {
     ? byPerson.map(([p, v]) => `<div class="person-row"><div class="who">${avatarHTML(p)}<div><b>${esc(p)}</b><small>${Math.round(v / out * 100)}% dos gastos</small></div></div><b>${money(v)}</b></div>`).join('')
     : '<p class="muted small">Sem despesas neste período.</p>';
 
-  $('recentList').innerHTML = sortedTxs().filter(t => inRange(t, r)).slice(0, 5).map(txCard).join('')
+  $('recentList').innerHTML = sortedTxs().filter(t => inRange(t, r)).slice(0, 5).map(t => txCard(t, true)).join('')
     || '<div class="empty">Nenhum lançamento neste período.</div>';
 }
 
@@ -916,11 +919,12 @@ function renderChart(expenses, r) {
   $('chartMax').textContent = 'Maior: ' + money(peak);
 }
 
-function txCard(t) {
+function txCard(t, withDate) {
   const inc = t.kind === 'income';
+  const meta = [t.category, t.person].map(esc).join(' · ') + (withDate === true ? ' · ' + fmtDate(t.date).slice(0, 5) : '');
   return `<button class="tx" type="button" data-edit="${esc(t.id)}">
     <span class="tx-ico${inc ? ' income' : ''}" aria-hidden="true">${CAT_ICON[t.category] || '•'}</span>
-    <span class="tx-main"><b>${esc(t.description)}</b><small>${esc(t.category)} · ${esc(t.person)} · ${fmtDate(t.date)}</small></span>
+    <span class="tx-main"><b>${esc(t.description)}</b><small>${meta}</small></span>
     <span class="amount ${inc ? 'income' : 'expense'}">${inc ? '+' : '−'} ${money(t.amount)}</span>
   </button>`;
 }
@@ -937,7 +941,7 @@ function renderTransactions() {
     (!q || cleanText([t.description, t.category, t.merchant, t.person, t.reference, t.notes].join(' ')).includes(q)));
   const empty = $('txEmpty');
   empty.hidden = list.length > 0;
-  empty.textContent = txs.length ? 'Nenhum lançamento com esses filtros.' : 'Ainda não há lançamentos. Toque em “+ Novo lançamento”.';
+  empty.textContent = txs.length ? 'Nenhum lançamento com esses filtros.' : 'Ainda não há lançamentos. Toque no + para lançar o primeiro.';
   let html = '', lastDay = '';
   for (const t of list.slice(0, txLimit)) {
     if (t.date !== lastDay) { html += `<div class="day-head">${esc(fmtDay(t.date))}</div>`; lastDay = t.date; }
@@ -1010,12 +1014,15 @@ function openTx(id = null) {
     }).catch(err => console.error(err));
   }
   $('ocrBtn').disabled = true;
-  $('ocrStatus').textContent = '';
+  $('ocrStatus').textContent = receiptData || (t && t.hasReceipt) ? 'Comprovante anexado.' : 'Opcional: tire uma foto e o app preenche os campos.';
   $('txModal').classList.add('show');
+  document.body.classList.add('noscroll');
+  $('txModal').querySelector('.sheet').scrollTop = 0;
   if (!t) setTimeout(() => $('amountInput').focus(), 80);
 }
 function closeTx() {
   $('txModal').classList.remove('show');
+  document.body.classList.remove('noscroll');
   editingId = null; receiptData = ''; selectedReceiptFile = null;
 }
 $('newBtn').onclick = () => openTx();
@@ -1088,7 +1095,8 @@ async function attachReceipt(file) {
     $('scanPreview').src = receiptData;
     $('scanPreview').hidden = false;
     $('ocrBtn').disabled = false;
-    $('ocrStatus').textContent = 'Foto anexada. Preencha os campos ou toque em “Ler com OCR”.';
+    $('ocrStatus').textContent = 'Foto anexada. Lendo o comprovante…';
+    readReceipt();   // já começa a leitura; o usuário pode tocar em "Ler de novo"
   } catch (err) {
     console.error(err);
     receiptData = ''; selectedReceiptFile = null;
