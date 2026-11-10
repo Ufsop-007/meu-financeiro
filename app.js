@@ -1249,6 +1249,60 @@ function findAmount(lines) {
   return { amount: null, confidence: 'none' };
 }
 
+// ---------- Empresa, data e forma de pagamento em cupons ----------
+const COMPANY_RE = /\b(?:LTDA?|EIRELI|EPP|S\/A|S\.A\.?|ME|MEI|COMERCIO|SUPERMERCADOS?|MERCADOS?|ATACAD[AO]O?|ATACAREJO|DROGARIA|FARMACIA|POSTO|RESTAURANTE|PADARIA|LANCHONETE|LOJAS?|MAGAZINE|DISTRIBUIDORA)\b/;
+const NOT_COMPANY = /cnpj|cpf|inscricao|\bie\b|^\s*(?:rua|r\.|av\.?|avenida|rod\.?|rodovia|al\.?|alameda|tel|fone)\b|documento aux|nota fiscal|cupom|consumidor|emitida|contingencia|autoriza/i;
+// Pega o maior trecho em MAIÚSCULAS da linha (o nome da empresa costuma vir assim; o resto é ruído do logotipo).
+function upperRun(line) {
+  let best = [], cur = [];
+  for (const tok of String(line).split(/\s+/)) {
+    const letters = tok.replace(/[^A-Za-zÀ-ÿ]/g, '');
+    const isUp = letters.length > 0 && letters === letters.toUpperCase() && letters !== letters.toLowerCase();
+    if (isUp || (cur.length && /^[&.\-/]+$/.test(tok))) cur.push(tok);
+    else { if (cur.length > best.length) best = cur; cur = []; }
+  }
+  if (cur.length > best.length) best = cur;
+  return best.join(' ').replace(/^[^A-Za-zÀ-ÿ0-9]+|[^A-Za-zÀ-ÿ0-9.]+$/g, '').trim();
+}
+function guessMerchant(lines) {
+  const head = lines.slice(0, 12);
+  for (const line of head) {
+    if (NOT_COMPANY.test(norm(line))) continue;
+    const run = upperRun(line);
+    if (run.split(' ').length >= 2 && run.length >= 6 && COMPANY_RE.test(norm(run).toUpperCase())) return run.slice(0, 100);
+  }
+  // sem palavra típica de empresa: a linha logo abaixo do CNPJ
+  for (let i = 0; i < head.length - 1; i++) {
+    if (!/cnpj/i.test(norm(head[i]))) continue;
+    const run = upperRun(head[i + 1]);
+    if (!NOT_COMPANY.test(norm(head[i + 1])) && run.split(' ').length >= 2 && run.length >= 6) return run.slice(0, 100);
+  }
+  return '';
+}
+// Primeira data plausível do documento (cupons não têm rótulo de emissão).
+function firstDate(lines) {
+  const year = new Date().getFullYear();
+  for (const line of lines) {
+    if (/vencimento|validade|nascimento/i.test(norm(line))) continue;
+    for (const m of String(line).matchAll(/(?<![\d.,/])(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4}|\d{2})(?![\d.,/])/g)) {
+      const iso = toISO(m[0]);
+      const y = +iso.slice(0, 4);
+      if (iso && y >= 2000 && y <= year + 1) return iso;
+    }
+  }
+  return '';
+}
+function guessPayment(lines) {
+  const ns = lines.map(norm);
+  const idx = ns.findIndex(l => /forma de pagamento|meio de pagamento/i.test(l));
+  const zone = idx >= 0 ? ns.slice(idx, idx + 3).join(' ') : ns.join(' ');
+  if (/debito/i.test(zone)) return 'Cartão de débito';
+  if (/credito/i.test(zone)) return 'Cartão de crédito';
+  if (/\bpix\b/i.test(zone)) return 'Pix';
+  if (/dinheiro/i.test(zone)) return 'Dinheiro';
+  return '';
+}
+
 function parseDocument(text) {
   const lines = String(text || '').split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   const ns = lines.map(norm), all = norm(text);
@@ -1289,7 +1343,14 @@ function parseDocument(text) {
   }
   f.payer = f.payer.replace(/\s+(?:CPF|CNPJ).*$/i, '').trim();
   f.beneficiary = f.beneficiary.replace(/\s+(?:CPF|CNPJ).*$/i, '').trim();
-  f.merchant = f.beneficiary || field([/^estabelecimento\b/i, /^empresa\b/i, /razao social/i, /nome fantasia/i]);
+  f.merchant = f.beneficiary || field([/^estabelecimento\b/i, /^empresa\b/i, /razao social/i, /nome fantasia/i]) || guessMerchant(lines);
+  // Cupom / nota de consumidor sem categoria reconhecida
+  const isCupom = /documento aux|nfc-?e|nota fiscal de consumidor|cupom fiscal|extrato\s+n|sat\b/i.test(all);
+  if (isCupom && (!rule || rule.type === 'Cupom / nota de compra')) {
+    if (!rule) { f.type = 'Cupom / nota de compra'; f.category = 'Compras'; }
+    if (f.merchant) f.description = 'Compra - ' + f.merchant.slice(0, 60);
+  }
+  if (!f.payment || f.type === 'Cupom / nota de compra') f.payment = guessPayment(lines) || f.payment;
   f.reference = field([/referencia\b/i, /competencia\b/i, /mensalidade\b/i, /referente a/i]);
 
   // Número do documento: após "Número do Documento" ou "Nosso número"; não confundir com "Valor do documento".
@@ -1311,6 +1372,7 @@ function parseDocument(text) {
   for (let i = 0; i < ns.length; i++) {
     if (/data do documento|data de emissao|emitido em/i.test(ns[i])) { f.issueDate = toISO(lines[i]) || toISO(lines[i + 1] || ''); if (f.issueDate) break; }
   }
+  if (!f.issueDate && f.type !== 'Boleto bancário' && f.type !== 'Cobrança escolar') f.issueDate = firstDate(lines);
   if (f.type === 'Cobrança escolar' && f.beneficiary) f.description = 'Mensalidade escolar - ' + f.beneficiary.slice(0, 55);
   return f;
 }
@@ -1350,7 +1412,7 @@ async function readReceipt() {
     await worker.setParameters({ tessedit_pageseg_mode: '3' });
     const result = await worker.recognize(image);
     const d = parseDocument(result.data.text || '');
-    if (!d.payer) {
+    if (!d.payer && d.payment === 'Boleto') {
       status.textContent = 'Relendo a área do pagador…';
       await worker.setParameters({ tessedit_pageseg_mode: '11' });
       try {
