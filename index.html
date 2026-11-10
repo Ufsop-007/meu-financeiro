@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://www.gstatic.com https://apis.google.com https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://*.firebaseapp.com https://accounts.google.com https://apis.google.com https://www.gstatic.com https://cdn.jsdelivr.net data: blob:; frame-src https://*.firebaseapp.com https://accounts.google.com https://*.google.com; worker-src 'self' blob: https://cdn.jsdelivr.net; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#0b0d14">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Meu Financeiro">
+<title>Meu Financeiro · Casal</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="locked" data-gate="login">
+
+<!-- ================= Login Google ================= -->
+<div class="gate" id="loginGate" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+  <div class="gate-card">
+    <div class="logo-mark" aria-hidden="true">$</div>
+    <h1 id="loginTitle">Meu Financeiro</h1>
+    <p class="muted" id="loginMsg"></p>
+    <button class="btn btn-google block" type="button" id="googleLogin">
+      <span class="g-mark" aria-hidden="true">G</span> Entrar com Google
+    </button>
+    <p class="fine">Fica conectado neste aparelho até você sair. Os dados só são lidos com a senha do casal.</p>
+  </div>
+</div>
+
+<!-- ================= Senha do casal ================= -->
+<div class="gate" id="vaultGate" role="dialog" aria-modal="true" aria-labelledby="vaultTitle">
+  <form class="gate-card" id="vaultForm" autocomplete="off">
+    <div class="logo-mark" aria-hidden="true">$</div>
+    <h1 id="vaultTitle">Senha do casal</h1>
+    <p class="muted" id="vaultMessage"></p>
+    <label class="label" for="vaultPassword">Senha do casal</label>
+    <div class="pw">
+      <input id="vaultPassword" type="password" autocomplete="current-password" required>
+      <button type="button" class="pw-toggle" id="togglePass" aria-pressed="false" aria-label="Mostrar senha">Mostrar</button>
+    </div>
+    <div id="strengthWrap" hidden>
+      <div class="strength" aria-hidden="true"><span id="strengthBar"></span></div>
+      <div class="hint" id="strengthText"></div>
+    </div>
+    <div id="vaultConfirmWrap" hidden>
+      <label class="label" for="vaultConfirm">Confirmar senha</label>
+      <input id="vaultConfirm" type="password" autocomplete="new-password">
+      <div class="hint" id="confirmText"></div>
+    </div>
+    <button class="btn btn-primary block" type="submit" id="vaultSubmit">Entrar</button>
+    <div class="status" id="vaultStatus" aria-live="polite"></div>
+  </form>
+</div>
+
+<!-- ================= Aplicativo ================= -->
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo-mark" aria-hidden="true">$</div>
+      <div>
+        <strong>Meu Financeiro</strong>
+        <span>Nosso controle de gastos</span>
+      </div>
+    </div>
+    <nav class="tabs" aria-label="Seções">
+      <button class="tab active" data-view="home">Início</button>
+      <button class="tab" data-view="transactions">Lançamentos</button>
+      <button class="tab" data-view="budgets">Orçamentos</button>
+      <button class="tab" data-view="couple">Casal</button>
+    </nav>
+    <div class="top-actions">
+      <span class="sync" id="syncBadge">Sincronizado</span>
+      <span class="who" id="whoami"></span>
+      <button class="btn btn-ghost" id="lockBtn">Bloquear</button>
+      <button class="btn btn-primary" id="newBtn">+ Novo lançamento</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ---------- Início ---------- -->
+    <section class="view active" id="view-home" aria-label="Início">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Visão geral</p>
+          <h2 id="periodCaption">Este mês</h2>
+        </div>
+        <div class="period-nav">
+          <button class="icon-btn" id="prevPeriod" aria-label="Período anterior">‹</button>
+          <button class="icon-btn" id="nextPeriod" aria-label="Próximo período">›</button>
+        </div>
+      </div>
+      <div class="seg" id="periodSwitch" role="group" aria-label="Escolha o período">
+        <button data-period="day">Dia</button>
+        <button data-period="week">Semana</button>
+        <button data-period="month" class="on">Mês</button>
+        <button data-period="year">Ano</button>
+        <button data-period="all">Tudo</button>
+      </div>
+
+      <div class="card hero">
+        <p class="muted small">Gasto no período</p>
+        <p class="hero-value" id="spentTotal">R$ 0,00</p>
+        <div class="stats">
+          <div><span class="muted small">Receitas</span><strong class="ok" id="incomeTotal">R$ 0,00</strong></div>
+          <div><span class="muted small">Saldo</span><strong id="balanceTotal">R$ 0,00</strong></div>
+          <div><span class="muted small">Lançamentos</span><strong id="countTotal">0</strong></div>
+        </div>
+        <div class="chart" id="dailyChart"></div>
+        <div class="chart-foot"><span id="chartFirst"></span><span id="chartMax"></span><span id="chartLast"></span></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>Por categoria</h3>
+          <div id="categoryBars"></div>
+        </div>
+        <div class="card">
+          <h3>Quem gastou</h3>
+          <div id="personSplit"></div>
+          <h3 class="mt">Últimos lançamentos</h3>
+          <div id="recentList" class="list"></div>
+        </div>
+      </div>
+
+      <button class="card voice" id="voiceAdd" type="button">
+        <span class="voice-ico" aria-hidden="true">🎙</span>
+        <span><strong>Lançar por voz</strong><span class="muted small block">Diga “gasolina 150 reais”. O áudio pode ser processado pelo navegador.</span></span>
+      </button>
+    </section>
+
+    <!-- ---------- Lançamentos ---------- -->
+    <section class="view" id="view-transactions" aria-label="Lançamentos">
+      <div class="page-head">
+        <h2>Lançamentos</h2>
+        <button class="btn btn-ghost" id="csvBtn" type="button">Exportar planilha</button>
+      </div>
+      <div class="filters">
+        <input id="search" type="search" placeholder="Buscar descrição, loja, categoria…" aria-label="Buscar lançamentos" maxlength="80">
+        <select id="typeFilter" aria-label="Tipo"><option value="">Todos os tipos</option><option value="expense">Despesas</option><option value="income">Receitas</option></select>
+        <select id="personFilter" aria-label="Pessoa"></select>
+        <select id="categoryFilter" aria-label="Categoria"></select>
+      </div>
+      <div class="card list-card">
+        <div id="txList"></div>
+        <div class="empty" id="txEmpty" hidden></div>
+      </div>
+    </section>
+
+    <!-- ---------- Orçamentos ---------- -->
+    <section class="view" id="view-budgets" aria-label="Orçamentos">
+      <div class="page-head">
+        <div>
+          <p class="eyebrow">Mês atual</p>
+          <h2 id="budgetMonth"></h2>
+        </div>
+      </div>
+      <div class="card">
+        <div class="stats">
+          <div><span class="muted small">Gasto no mês</span><strong id="budgetSpent">R$ 0,00</strong></div>
+          <div><span class="muted small">Limite total</span><strong id="budgetLimit">R$ 0,00</strong></div>
+          <div><span class="muted small">Restante</span><strong id="budgetLeft">R$ 0,00</strong></div>
+        </div>
+        <div class="progress big"><span id="budgetAll"></span></div>
+        <p class="muted small" id="budgetHint"></p>
+      </div>
+      <p class="muted small">Defina um limite mensal por categoria. Deixe em branco para não controlar.</p>
+      <div class="card" id="budgetList"></div>
+    </section>
+
+    <!-- ---------- Casal ---------- -->
+    <section class="view" id="view-couple" aria-label="Casal e dados">
+      <div class="page-head"><h2>Casal</h2></div>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Quem usa o app</h3>
+          <p class="muted small">Cada um lança com a própria conta Google. Os lançamentos aparecem para os dois em tempo real, inclusive no celular e no computador.</p>
+          <div id="peopleList" class="list"></div>
+          <form id="personForm" class="inline">
+            <input id="personName" placeholder="Outra pessoa (ex.: filho)" maxlength="40" aria-label="Nome da pessoa">
+            <button class="btn btn-primary" type="submit">Adicionar</button>
+          </form>
+        </div>
+        <div class="card">
+          <h3>Conta e acesso</h3>
+          <p class="muted small">Você está conectado como <strong id="whoami2"></strong>. Para sair deste aparelho, use o botão abaixo.</p>
+          <div class="btn-row">
+            <button class="btn btn-ghost" id="lockBtn2" type="button">Bloquear agora</button>
+            <button class="btn btn-danger" id="signOutBtn" type="button">Sair da conta</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Segurança</h3>
+          <p class="muted small">Dados cifrados com AES-256-GCM. A chave sai da senha do casal (PBKDF2, 310 mil iterações) e fica só neste aparelho. O servidor não lê nada.</p>
+          <div class="btn-row">
+            <button class="btn btn-ghost" id="changePassBtn" type="button">Trocar senha do casal</button>
+          </div>
+          <p class="muted small" id="syncInfo"></p>
+        </div>
+        <div class="card">
+          <h3>Backup e planilha</h3>
+          <p class="muted small">Backup JSON e planilha CSV são <strong>sem criptografia</strong>. Guarde em local seguro.</p>
+          <div class="btn-row">
+            <button class="btn btn-ghost" id="backupBtn" type="button">Exportar backup JSON</button>
+            <button class="btn btn-ghost" id="restoreBtn" type="button">Importar backup JSON</button>
+          </div>
+          <input type="file" id="restoreFile" accept="application/json" hidden>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <nav class="bottomnav" id="bottomNav" aria-label="Navegação">
+    <button class="bn active" data-view="home"><span class="bn-ico" aria-hidden="true">◎</span>Início</button>
+    <button class="bn" data-view="transactions"><span class="bn-ico" aria-hidden="true">☰</span>Lançamentos</button>
+    <button class="bn" data-view="budgets"><span class="bn-ico" aria-hidden="true">◔</span>Orçamentos</button>
+    <button class="bn" data-view="couple"><span class="bn-ico" aria-hidden="true">♡</span>Casal</button>
+  </nav>
+  <button class="fab" id="mobileAdd" type="button" aria-label="Novo lançamento">+</button>
+</div>
+
+<!-- ================= Modal: lançamento ================= -->
+<div class="modal" id="txModal" role="dialog" aria-modal="true" aria-labelledby="txTitle">
+  <div class="sheet">
+    <div class="sheet-head">
+      <h2 id="txTitle">Novo lançamento</h2>
+      <button class="icon-btn" id="closeModal" type="button" aria-label="Fechar">✕</button>
+    </div>
+    <form id="txForm" class="form-grid">
+      <div class="seg full" id="kindSeg" role="group" aria-label="Tipo">
+        <button type="button" data-kind="expense" class="on">Despesa</button>
+        <button type="button" data-kind="income">Receita</button>
+      </div>
+
+      <div class="field full">
+        <span class="label">Comprovante (opcional)</span>
+        <div class="scanbox">
+          <input id="cameraFile" type="file" accept="image/*" capture="environment" hidden>
+          <input id="receiptFile" type="file" accept="image/*" hidden>
+          <div class="btn-row">
+            <button type="button" class="btn btn-ghost" id="cameraPick">📷 Foto</button>
+            <button type="button" class="btn btn-ghost" id="galleryPick">Galeria</button>
+            <button type="button" class="btn btn-ghost" id="ocrBtn" disabled>Ler com OCR</button>
+          </div>
+          <img id="scanPreview" class="preview" alt="Prévia do comprovante" hidden>
+          <div class="hint" id="ocrStatus" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="label" for="amountInput">Valor (R$) *</label>
+        <input id="amountInput" type="text" inputmode="numeric" autocomplete="off" placeholder="0,00" required>
+      </div>
+      <div class="field">
+        <label class="label" for="dateInput">Data *</label>
+        <input id="dateInput" type="date" required>
+      </div>
+      <div class="field full">
+        <label class="label" for="description">Descrição *</label>
+        <input id="description" maxlength="300" placeholder="Ex.: Mercado da semana" required>
+      </div>
+      <div class="field">
+        <label class="label" for="category">Categoria</label>
+        <select id="category"></select>
+      </div>
+      <div class="field">
+        <label class="label" for="person">Quem pagou?</label>
+        <select id="person"></select>
+      </div>
+      <div class="field">
+        <label class="label" for="payment">Forma de pagamento</label>
+        <select id="payment">
+          <option>Pix</option><option>Cartão de crédito</option><option>Cartão de débito</option>
+          <option>Dinheiro</option><option>Transferência</option><option>Boleto</option><option>Outro</option>
+        </select>
+      </div>
+      <div class="field">
+        <label class="label" for="merchant">Estabelecimento</label>
+        <input id="merchant" maxlength="200" placeholder="Loja, escola ou empresa">
+      </div>
+      <details class="field full more">
+        <summary>Mais detalhes</summary>
+        <div class="form-grid">
+          <div class="field"><label class="label" for="documentType">Tipo de documento</label><input id="documentType" maxlength="200" placeholder="Boleto, nota, recibo…"></div>
+          <div class="field"><label class="label" for="beneficiary">Beneficiário</label><input id="beneficiary" maxlength="200"></div>
+          <div class="field"><label class="label" for="payer">Pagador</label><input id="payer" maxlength="200"></div>
+          <div class="field"><label class="label" for="dueDate">Vencimento</label><input id="dueDate" type="date"></div>
+          <div class="field"><label class="label" for="reference">Referência</label><input id="reference" maxlength="200" placeholder="Ex.: Mensalidade de novembro"></div>
+          <div class="field"><label class="label" for="documentNumber">Nº do documento</label><input id="documentNumber" maxlength="100"></div>
+          <div class="field full"><label class="label" for="notes">Observações</label><textarea id="notes" maxlength="2000"></textarea></div>
+        </div>
+      </details>
+
+      <div class="sheet-foot full">
+        <button type="button" class="btn btn-danger" id="deleteTx" hidden>Excluir</button>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost" id="cancelModal">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="saveTx">Salvar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ================= Modal: pessoa ================= -->
+<div class="modal" id="personModal" role="dialog" aria-modal="true" aria-labelledby="personModalTitle">
+  <div class="sheet small-sheet">
+    <div class="sheet-head"><h2 id="personModalTitle">Pessoa</h2><button class="icon-btn" id="closePerson" type="button" aria-label="Fechar">✕</button></div>
+    <div class="field"><label class="label" for="personModalName">Nome</label><input id="personModalName" maxlength="40"></div>
+    <div class="sheet-foot"><span class="spacer"></span><button class="btn btn-ghost" id="cancelPerson" type="button">Cancelar</button><button class="btn btn-primary" id="savePerson" type="button">Salvar</button></div>
+  </div>
+</div>
+
+<div class="modal" id="passModal" role="dialog" aria-modal="true" aria-labelledby="passTitle">
+  <div class="sheet small-sheet">
+    <div class="sheet-head"><h2 id="passTitle">Trocar senha do casal</h2><button class="icon-btn" id="closePass" type="button" aria-label="Fechar">✕</button></div>
+    <div class="field"><label class="label" for="passNew">Nova senha do casal</label><input id="passNew" type="password" autocomplete="new-password"></div>
+    <div class="field"><label class="label" for="passConfirm">Confirmar nova senha</label><input id="passConfirm" type="password" autocomplete="new-password"></div>
+    <div class="hint" id="passHint"></div>
+    <div class="status" id="passStatus" aria-live="polite"></div>
+    <div class="sheet-foot"><span class="spacer"></span><button class="btn btn-ghost" id="cancelPass" type="button">Cancelar</button><button class="btn btn-primary" id="savePass" type="button">Trocar</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="config.js"></script>
+<script src="backend-firebase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

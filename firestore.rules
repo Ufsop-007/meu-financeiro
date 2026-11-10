@@ -1,0 +1,22 @@
+rules_version = '2';
+// Só as duas contas do casal leem e gravam. Troque pelos seus e-mails (iguais aos do config.js).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function membro() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'ubiratan.felix01@gmail.com',
+          'anabeatrizqg@gmail.com'
+        ];
+    }
+    match /casal/{docId} {
+      allow read: if membro();
+      allow create, update: if membro();
+      allow delete: if membro();
+    }
+    match /{resto=**} {
+      allow read, write: if false;
+    }
+  }
+}
